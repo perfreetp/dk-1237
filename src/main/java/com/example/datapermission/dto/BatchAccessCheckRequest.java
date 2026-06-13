@@ -6,6 +6,12 @@ import java.util.List;
 @Data
 public class BatchAccessCheckRequest {
 
+    private String callerCode;
+
+    private String tenantId;
+
+    private String resourceDomain;
+
     private List<AccessCheckItem> items;
 
     private Boolean continueOnError = true;

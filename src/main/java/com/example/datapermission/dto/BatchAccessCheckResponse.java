@@ -2,6 +2,7 @@ package com.example.datapermission.dto;
 
 import lombok.Data;
 import java.util.List;
+import java.util.Map;
 
 @Data
 public class BatchAccessCheckResponse {
@@ -20,6 +21,18 @@ public class BatchAccessCheckResponse {
 
     private BatchSummary summary;
 
+    private StrategyInfo matchedStrategy;
+
+    @Data
+    public static class StrategyInfo {
+        private Long strategyId;
+        private String strategyCode;
+        private String strategyName;
+        private String callerCode;
+        private String tenantId;
+        private String resourceDomain;
+    }
+
     @Data
     public static class BatchCheckResult {
         private String itemId;
@@ -34,6 +47,7 @@ public class BatchAccessCheckResponse {
         private ApplyPermissionResult applyPermission;
         private String errorMessage;
         private Long executionTime;
+        private StrategyInfo appliedStrategy;
     }
 
     @Data

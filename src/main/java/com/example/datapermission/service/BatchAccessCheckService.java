@@ -5,6 +5,7 @@ import com.example.datapermission.dto.BatchAccessCheckRequest.*;
 import com.example.datapermission.dto.BatchAccessCheckResponse.*;
 import com.example.datapermission.dto.EnhancedAccessCheckRequest;
 import com.example.datapermission.dto.EnhancedAccessCheckResponse;
+import com.example.datapermission.entity.SysAccessStrategy;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -19,6 +20,7 @@ import java.util.stream.Collectors;
 public class BatchAccessCheckService {
 
     private final EnhancedAccessCheckService accessCheckService;
+    private final AccessStrategyService accessStrategyService;
 
     private static final int MAX_BATCH_SIZE = 100;
     private static final int THREAD_POOL_SIZE = 10;
@@ -36,12 +38,22 @@ public class BatchAccessCheckService {
             return response;
         }
 
+        SysAccessStrategy matchedStrategy = null;
+        if (request.getCallerCode() != null) {
+            matchedStrategy = accessStrategyService.matchStrategy(
+                    request.getCallerCode(),
+                    request.getTenantId(),
+                    request.getResourceDomain()
+            );
+            response.setMatchedStrategy(convertStrategyInfo(matchedStrategy));
+        }
+
         List<BatchCheckResult> results = new ArrayList<>();
 
         if (Boolean.TRUE.equals(request.getParallel())) {
-            results = executeParallel(request.getItems());
+            results = executeParallel(request.getItems(), matchedStrategy);
         } else {
-            results = executeSequential(request.getItems());
+            results = executeSequential(request.getItems(), matchedStrategy);
         }
 
         int successCount = (int) results.stream().filter(BatchCheckResult::getSuccess).count();
@@ -61,12 +73,12 @@ public class BatchAccessCheckService {
         return response;
     }
 
-    private List<BatchCheckResult> executeParallel(List<AccessCheckItem> items) {
+    private List<BatchCheckResult> executeParallel(List<AccessCheckItem> items, SysAccessStrategy strategy) {
         ExecutorService executor = Executors.newFixedThreadPool(THREAD_POOL_SIZE);
         List<Future<BatchCheckResult>> futures = new ArrayList<>();
 
         for (AccessCheckItem item : items) {
-            Future<BatchCheckResult> future = executor.submit(() -> processSingleItem(item));
+            Future<BatchCheckResult> future = executor.submit(() -> processSingleItem(item, strategy));
             futures.add(future);
         }
 
@@ -88,27 +100,35 @@ public class BatchAccessCheckService {
         return results;
     }
 
-    private List<BatchCheckResult> executeSequential(List<AccessCheckItem> items) {
+    private List<BatchCheckResult> executeSequential(List<AccessCheckItem> items, SysAccessStrategy strategy) {
         List<BatchCheckResult> results = new ArrayList<>();
         for (AccessCheckItem item : items) {
-            results.add(processSingleItem(item));
+            results.add(processSingleItem(item, strategy));
         }
         return results;
     }
 
-    private BatchCheckResult processSingleItem(AccessCheckItem item) {
+    private BatchCheckResult processSingleItem(AccessCheckItem item, SysAccessStrategy strategy) {
         long itemStartTime = System.currentTimeMillis();
         BatchCheckResult result = new BatchCheckResult();
         result.setItemId(item.getItemId());
 
         try {
-            EnhancedAccessCheckRequest checkRequest = convertToCheckRequest(item);
+            EnhancedAccessCheckRequest checkRequest = convertToCheckRequest(item, strategy);
             EnhancedAccessCheckResponse checkResponse = accessCheckService.checkAccess(checkRequest);
 
             result.setSuccess(true);
             result.setAccessDecision(checkResponse.getAccessDecision());
             result.setAllowed(checkResponse.getAllowed());
             result.setDeniedReason(checkResponse.getDeniedReason());
+
+            if (strategy != null) {
+                result.setAppliedStrategy(convertStrategyInfo(strategy));
+                if ("DENY".equals(checkResponse.getAccessDecision()) &&
+                        (checkResponse.getDeniedReason() == null || checkResponse.getDeniedReason().isEmpty())) {
+                    result.setDeniedReason(strategy.getFallbackDenyMessage());
+                }
+            }
 
             if (checkResponse.getAccessibleScope() != null) {
                 result.setAccessibleScope(convertScope(checkResponse.getAccessibleScope()));
@@ -150,7 +170,7 @@ public class BatchAccessCheckService {
         return result;
     }
 
-    private EnhancedAccessCheckRequest convertToCheckRequest(AccessCheckItem item) {
+    private EnhancedAccessCheckRequest convertToCheckRequest(AccessCheckItem item, SysAccessStrategy strategy) {
         EnhancedAccessCheckRequest request = new EnhancedAccessCheckRequest();
         request.setUserId(item.getUserId());
         request.setResourceCode(item.getResourceCode());
@@ -159,6 +179,15 @@ public class BatchAccessCheckService {
         request.setVersion("v2");
         request.setReturnSqlFilter(true);
         request.setReturnAppliedRules(true);
+
+        if (strategy != null) {
+            if (strategy.getDefaultFieldAccessLevel() != null) {
+                request.setFieldAccessLevel(strategy.getDefaultFieldAccessLevel());
+            }
+            if (strategy.getDefaultDesensitizationLevel() != null) {
+                request.setDesensitizationLevel(strategy.getDefaultDesensitizationLevel());
+            }
+        }
 
         if (item.getComplexConditions() != null) {
             EnhancedAccessCheckRequest.ComplexConditions conditions = new EnhancedAccessCheckRequest.ComplexConditions();
@@ -189,6 +218,19 @@ public class BatchAccessCheckService {
         }
 
         return request;
+    }
+
+    private StrategyInfo convertStrategyInfo(SysAccessStrategy strategy) {
+        if (strategy == null) return null;
+
+        StrategyInfo info = new StrategyInfo();
+        info.setStrategyId(strategy.getId());
+        info.setStrategyCode(strategy.getStrategyCode());
+        info.setStrategyName(strategy.getStrategyName());
+        info.setCallerCode(strategy.getCallerCode());
+        info.setTenantId(strategy.getTenantId());
+        info.setResourceDomain(strategy.getResourceDomain());
+        return info;
     }
 
     private AccessScopeResult convertScope(EnhancedAccessCheckResponse.AccessScope scope) {
