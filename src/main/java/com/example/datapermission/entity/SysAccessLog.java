@@ -27,7 +27,19 @@ public class SysAccessLog {
 
     private String hiddenFields;
 
+    private String maskedFields;
+
+    private String sensitiveFieldsAccessed;
+
+    private Long recordCount;
+
+    private Long dataVolume;
+
     private String requestParams;
+
+    private String clientIp;
+
+    private String userAgent;
 
     private Long executionTimeMs;
 

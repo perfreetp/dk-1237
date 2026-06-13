@@ -41,6 +41,12 @@ public class SysUserPermission {
 
     private Long createdBy;
 
+    private LocalDateTime lastUsedTime;
+
+    private Long usedCount;
+
+    private String riskTags;
+
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createdTime;
 

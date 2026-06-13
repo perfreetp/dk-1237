@@ -21,6 +21,10 @@ public class SysOrgScope {
 
     private Integer hierarchyDepth;
 
+    private Integer priority;
+
+    private String ruleName;
+
     private LocalDateTime startTime;
 
     private LocalDateTime endTime;

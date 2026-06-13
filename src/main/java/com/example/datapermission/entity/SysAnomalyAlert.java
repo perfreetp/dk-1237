@@ -19,6 +19,16 @@ public class SysAnomalyAlert {
 
     private Integer alertLevel;
 
+    private Integer riskScore;
+
+    private String triggeredDimensions;
+
+    private String relatedAccessLogs;
+
+    private String suggestions;
+
+    private String restrictActions;
+
     private Integer handleStatus;
 
     private Long handleBy;

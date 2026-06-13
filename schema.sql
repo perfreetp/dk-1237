@@ -117,6 +117,8 @@ CREATE TABLE IF NOT EXISTS sys_org_scope (
     target_org_id BIGINT COMMENT '目标组织ID',
     target_org_type VARCHAR(50) COMMENT '目标组织类型',
     hierarchy_depth INT COMMENT '层级深度',
+    priority INT DEFAULT 600 COMMENT '优先级，数字越小优先级越高',
+    rule_name VARCHAR(200) COMMENT '规则名称',
     start_time DATETIME COMMENT '生效时间',
     end_time DATETIME COMMENT '失效时间',
     status TINYINT DEFAULT 1 COMMENT '状态',
@@ -127,6 +129,7 @@ CREATE TABLE IF NOT EXISTS sys_org_scope (
     INDEX idx_source_org (source_org_id),
     INDEX idx_target_org (target_org_id),
     INDEX idx_status (status),
+    INDEX idx_priority (priority),
     FOREIGN KEY (source_org_id) REFERENCES sys_organization(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='组织范围授权表';
 
@@ -148,12 +151,16 @@ CREATE TABLE IF NOT EXISTS sys_user_permission (
     source_grant_id BIGINT COMMENT '来源授权ID',
     status TINYINT DEFAULT 1 COMMENT '状态：0撤销 1生效',
     created_by BIGINT COMMENT '授权人',
+    last_used_time DATETIME COMMENT '最后使用时间',
+    used_count BIGINT DEFAULT 0 COMMENT '使用次数',
+    risk_tags VARCHAR(500) COMMENT '风险标签',
     created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX idx_user_id (user_id),
     INDEX idx_resource_id (resource_id),
     INDEX idx_status (status),
     INDEX idx_end_time (end_time),
+    INDEX idx_last_used_time (last_used_time),
     FOREIGN KEY (user_id) REFERENCES sys_user(id),
     FOREIGN KEY (resource_id) REFERENCES sys_resource(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='用户权限授权表';
@@ -188,7 +195,13 @@ CREATE TABLE IF NOT EXISTS sys_access_log (
     query_conditions TEXT COMMENT '查询条件JSON',
     result_scope TEXT COMMENT '返回结果范围',
     hidden_fields TEXT COMMENT '隐藏字段列表',
+    masked_fields TEXT COMMENT '脱敏字段列表',
+    sensitive_fields_accessed TEXT COMMENT '访问的敏感字段列表',
+    record_count BIGINT COMMENT '访问记录数',
+    data_volume BIGINT COMMENT '数据量',
     request_params TEXT COMMENT '请求参数JSON',
+    client_ip VARCHAR(50) COMMENT '客户端IP',
+    user_agent VARCHAR(500) COMMENT '用户代理',
     execution_time_ms BIGINT COMMENT '执行耗时',
     created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
     INDEX idx_user_id (user_id),
@@ -204,6 +217,11 @@ CREATE TABLE IF NOT EXISTS sys_anomaly_alert (
     alert_type VARCHAR(50) NOT NULL COMMENT '预警类型',
     alert_content TEXT COMMENT '预警内容',
     alert_level INT DEFAULT 1 COMMENT '预警级别：1低 2中 3高',
+    risk_score INT COMMENT '风险评分',
+    triggered_dimensions TEXT COMMENT '触发的维度JSON',
+    related_access_logs TEXT COMMENT '关联的访问日志ID列表',
+    suggestions TEXT COMMENT '处理建议',
+    restrict_actions TEXT COMMENT '限制操作',
     handle_status TINYINT DEFAULT 0 COMMENT '处理状态：0未处理 1已处理',
     handle_by BIGINT COMMENT '处理人',
     handle_time DATETIME COMMENT '处理时间',
@@ -212,6 +230,7 @@ CREATE TABLE IF NOT EXISTS sys_anomaly_alert (
     INDEX idx_user_id (user_id),
     INDEX idx_alert_type (alert_type),
     INDEX idx_handle_status (handle_status),
+    INDEX idx_risk_score (risk_score),
     INDEX idx_created_time (created_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='异常操作预警表';
 
@@ -229,6 +248,81 @@ CREATE TABLE IF NOT EXISTS sys_expiration_notice (
     INDEX idx_notice_time (notice_time),
     INDEX idx_notice_status (notice_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='到期提醒记录表';
+
+-- 14. 权限任务表（离职/转岗）
+CREATE TABLE IF NOT EXISTS sys_permission_task (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    task_id VARCHAR(50) NOT NULL UNIQUE COMMENT '任务ID',
+    task_type VARCHAR(50) NOT NULL COMMENT '任务类型：LEAVE,TRANSFER',
+    user_id BIGINT NOT NULL COMMENT '用户ID',
+    target_user_id BIGINT COMMENT '目标用户ID',
+    status VARCHAR(50) DEFAULT 'INITIATED' COMMENT '状态',
+    current_step VARCHAR(50) COMMENT '当前步骤',
+    steps TEXT COMMENT '步骤JSON',
+    affected_permissions TEXT COMMENT '影响的权限JSON',
+    change_details TEXT COMMENT '变更详情JSON',
+    change_reason VARCHAR(500) COMMENT '变更原因',
+    change_by BIGINT COMMENT '操作人',
+    due_date DATETIME COMMENT '截止日期',
+    completed_time DATETIME COMMENT '完成时间',
+    created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_task_id (task_id),
+    INDEX idx_task_type (task_type),
+    INDEX idx_user_id (user_id),
+    INDEX idx_status (status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='权限任务表';
+
+-- 15. 权限复核任务表
+CREATE TABLE IF NOT EXISTS sys_permission_review_task (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    task_id VARCHAR(50) NOT NULL UNIQUE COMMENT '任务ID',
+    task_name VARCHAR(200) NOT NULL COMMENT '任务名称',
+    scope_org_ids TEXT COMMENT '组织范围',
+    scope_user_ids TEXT COMMENT '用户范围',
+    scope_resource_types TEXT COMMENT '资源类型范围',
+    risk_filters TEXT COMMENT '风险过滤器',
+    reviewers TEXT COMMENT '复核人',
+    due_date DATETIME COMMENT '截止日期',
+    auto_remind TINYINT DEFAULT 1 COMMENT '自动提醒',
+    remind_interval INT DEFAULT 3 COMMENT '提醒间隔天数',
+    status VARCHAR(50) DEFAULT 'CREATED' COMMENT '状态',
+    statistics_total BIGINT COMMENT '统计总数',
+    statistics_expiring BIGINT COMMENT '快到期数量',
+    statistics_unused BIGINT COMMENT '长期未使用数量',
+    statistics_over_granted BIGINT COMMENT '权限过大数量',
+    completed_count BIGINT DEFAULT 0 COMMENT '已完成数量',
+    created_by BIGINT COMMENT '创建人',
+    created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_task_id (task_id),
+    INDEX idx_status (status),
+    INDEX idx_due_date (due_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='权限复核任务表';
+
+-- 16. 权限复核项表
+CREATE TABLE IF NOT EXISTS sys_permission_review_item (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '主键ID',
+    task_id VARCHAR(50) NOT NULL COMMENT '任务ID',
+    permission_id BIGINT NOT NULL COMMENT '权限ID',
+    user_id BIGINT NOT NULL COMMENT '用户ID',
+    resource_id BIGINT NOT NULL COMMENT '资源ID',
+    risk_type VARCHAR(50) COMMENT '风险类型',
+    risk_level INT COMMENT '风险级别',
+    risk_details TEXT COMMENT '风险详情JSON',
+    suggestions TEXT COMMENT '建议',
+    review_status VARCHAR(50) DEFAULT 'PENDING' COMMENT '复核状态',
+    reviewer_id BIGINT COMMENT '复核人',
+    review_time DATETIME COMMENT '复核时间',
+    review_comment TEXT COMMENT '复核意见',
+    recommended_action VARCHAR(200) COMMENT '建议操作',
+    created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    INDEX idx_task_id (task_id),
+    INDEX idx_permission_id (permission_id),
+    INDEX idx_review_status (review_status),
+    INDEX idx_user_id (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='权限复核项表';
 
 -- 插入示例数据
 
