@@ -1226,7 +1226,348 @@ Response:
 }
 ```
 
-## 5. 核心算法设计
+## 5.5 批量访问校验V2
+
+#### 5.5.1 功能说明
+支持业务系统一次传入多个人员、多类资源和多组查询条件，按请求项分别返回放行、拒绝、脱敏字段和可拼查询范围，失败的项不影响其他项。
+
+#### 5.5.2 API接口
+```
+POST /api/v1/access/check-batch-v2
+Request Body:
+{
+    "items": [
+        {
+            "itemId": "item-001",
+            "userId": 123,
+            "resourceCode": "employee_table",
+            "operationType": "READ",
+            "complexConditions": {
+                "timeRange": {
+                    "field": "create_time",
+                    "startTime": "2024-01-01",
+                    "endTime": "2024-12-31"
+                },
+                "customerLevel": {
+                    "field": "customer_level",
+                    "levels": [1, 2, 3],
+                    "operator": "IN"
+                }
+            },
+            "requestedFields": ["name", "salary", "department"]
+        },
+        {
+            "itemId": "item-002",
+            "userId": 456,
+            "resourceCode": "salary_table",
+            "operationType": "READ",
+            "requestedFields": ["amount", "bonus"]
+        }
+    ],
+    "executionMode": "PARALLEL",
+    "timeoutMs": 5000,
+    "continueOnError": true
+}
+
+Response:
+{
+    "code": 0,
+    "message": "success",
+    "data": {
+        "totalCount": 2,
+        "successCount": 1,
+        "failureCount": 1,
+        "results": [
+            {
+                "itemId": "item-001",
+                "success": true,
+                "accessDecision": "PARTIAL",
+                "accessibleScope": {
+                    "orgIds": [1, 2, 3],
+                    "projectIds": [101, 102]
+                },
+                "sqlFilters": {
+                    "whereClause": "org_id IN (1, 2, 3) AND customer_level IN (1, 2, 3)",
+                    "orderByClause": "create_time DESC"
+                },
+                "maskedFields": [
+                    {"field": "salary", "maskedValue": "***", "reason": "需要等级5权限"}
+                ]
+            },
+            {
+                "itemId": "item-002",
+                "success": false,
+                "errorMessage": "用户无访问权限"
+            }
+        ],
+        "executionTimeMs": 120
+    }
+}
+```
+
+### 5.6 权限回收补偿重试机制
+
+#### 5.6.1 功能说明
+离职或转岗回收中，如果某个资源系统回收失败，能看到失败原因、重试次数和最终状态，重新触发后不重复回收已经成功的权限。
+
+#### 5.6.2 回收记录表 (sys_permission_recovery)
+```sql
+CREATE TABLE sys_permission_recovery (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT,
+    task_id VARCHAR(50) NOT NULL COMMENT '回收任务ID',
+    permission_id BIGINT NOT NULL COMMENT '权限ID',
+    user_id BIGINT NOT NULL COMMENT '用户ID',
+    resource_id BIGINT NOT NULL COMMENT '资源ID',
+    status TINYINT DEFAULT 0 COMMENT '状态：0待回收 1成功 2失败',
+    error_message TEXT COMMENT '失败原因',
+    retry_count INT DEFAULT 0 COMMENT '已重试次数',
+    max_retry_count INT DEFAULT 3 COMMENT '最大重试次数',
+    next_retry_time DATETIME COMMENT '下次重试时间',
+    recovered_by BIGINT COMMENT '回收操作人',
+    recovered_time DATETIME COMMENT '回收时间',
+    created_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_time DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+);
+```
+
+#### 5.6.3 API接口
+```
+POST /api/v1/recovery/task
+Request:
+{
+    "userId": 123,
+    "reason": "LEAVE",
+    "transferToUserId": 456
+}
+
+Response:
+{
+    "taskId": "RCV20240331001",
+    "status": "PROCESSING",
+    "totalPermissions": 15,
+    "pendingCount": 12,
+    "successCount": 2,
+    "failedCount": 1
+}
+
+GET /api/v1/recovery/task/{taskId}
+# 获取任务详情
+
+Response:
+{
+    "taskId": "RCV20240331001",
+    "status": "PARTIAL_FAILED",
+    "items": [
+        {
+            "id": 1,
+            "permissionId": 1001,
+            "resourceCode": "customer_data",
+            "status": "SUCCESS",
+            "recoveredTime": "2024-03-31 10:00:00"
+        },
+        {
+            "id": 2,
+            "permissionId": 1002,
+            "resourceCode": "salary_table",
+            "status": "FAILED",
+            "errorMessage": "资源系统连接超时",
+            "retryCount": 3,
+            "maxRetryCount": 3,
+            "nextRetryTime": null
+        }
+    ]
+}
+
+POST /api/v1/recovery/task/{taskId}/retry
+# 重新触发回收（跳过已成功的权限）
+
+POST /api/v1/recovery/task/{taskId}/items/{itemId}/retry
+# 单个权限重试
+```
+
+### 5.7 权限风险看板
+
+#### 5.7.1 功能说明
+按组织、岗位、资源敏感级别汇总快到期、长期未使用、越权申请和异常下载数量，点某一类能继续查明细列表。
+
+#### 5.7.2 API接口
+```
+GET /api/v1/risk/dashboard
+Query Params:
+- orgIds: 组织ID列表
+- postIds: 岗位ID列表
+- resourceSensitivityLevels: 敏感级别列表
+- groupBy: org | post | sensitivity
+
+Response:
+{
+    "code": 0,
+    "data": {
+        "summary": {
+            "expiringCount": 45,
+            "unusedCount": 120,
+            "overGrantedCount": 15,
+            "abnormalDownloadCount": 8,
+            "totalRisks": 188,
+            "riskScore": 65.5
+        },
+        "categoryStats": [
+            {
+                "category": "EXPIRING",
+                "categoryName": "即将到期",
+                "count": 45,
+                "percentage": 23.9,
+                "details": [
+                    {
+                        "id": 1,
+                        "userName": "张三",
+                        "orgName": "销售部",
+                        "resourceName": "客户数据",
+                        "riskType": "EXPIRING",
+                        "riskLevel": 1,
+                        "riskDescription": "权限将在 5 天后到期"
+                    }
+                ]
+            }
+        ],
+        "crossDimensionMatrix": {
+            "byOrganization": {
+                "销售部": 50,
+                "市场部": 35
+            },
+            "byPost": {
+                "客户经理": 40,
+                "销售主管": 25
+            },
+            "bySensitivity": {
+                "L1": 80,
+                "L3": 60,
+                "L5": 48
+            }
+        },
+        "trendData": [
+            {"date": "2024-03-25", "metric": "expiring", "value": 42},
+            {"date": "2024-03-25", "metric": "unused", "value": 115}
+        ]
+    }
+}
+
+GET /api/v1/risk/dashboard/summary
+# 获取简化汇总
+
+GET /api/v1/risk/dashboard/category/{category}
+# 按类别获取统计
+
+GET /api/v1/risk/details
+Query Params:
+- riskType: EXPIRING | UNUSED | OVER_GRANTED | ABNORMAL_DOWNLOAD
+- pageNum: 1
+- pageSize: 10
+
+# 获取风险明细列表
+```
+
+### 5.8 深度规则模拟
+
+#### 5.8.1 功能说明
+管理员选择用户和业务查询场景，临时调整总部、区域、项目规则后预览最终可见组织、项目、脱敏字段和被拒原因，确认后再真正保存规则。
+
+#### 5.8.2 API接口
+```
+POST /api/v1/rule-simulation/preview
+Request:
+{
+    "userId": 123,
+    "businessScenario": "CUSTOMER_QUERY",
+    "resourceCode": "customer_data",
+    "tempAdjustments": {
+        "orgScope": {
+            "scopeType": "HIERARCHY",
+            "includeOrgIds": [1, 2, 3],
+            "excludeOrgIds": [5],
+            "hierarchyDepth": 3
+        },
+        "project": {
+            "includeProjectIds": [101, 102],
+            "excludeProjectIds": [105],
+            "maxProjectCount": 50
+        },
+        "field": {
+            "additionalVisibleFields": ["internal_note"],
+            "removedVisibleFields": [],
+            "additionalMaskedFields": ["salary"],
+            "temporaryDesensitizationLevel": 3
+        }
+    },
+    "previewMode": "FULL"
+}
+
+Response:
+{
+    "status": "SUCCESS",
+    "userId": 123,
+    "businessScenario": "CUSTOMER_QUERY",
+    "resourceCode": "customer_data",
+    "preview": {
+        "visibleOrgs": [
+            {"orgId": 1, "orgName": "集团总部", "accessLevel": "INCLUDE"},
+            {"orgId": 2, "orgName": "华东区", "accessLevel": "HIERARCHY"}
+        ],
+        "visibleProjects": [
+            {"projectId": 101, "projectName": "项目A", "accessLevel": "FULL", "isIncluded": true}
+        ],
+        "visibleFields": ["name", "company", "contact", "internal_note"],
+        "maskedFields": ["salary", "bank_account"],
+        "deniedFields": ["id_card"],
+        "sqlScope": {
+            "allowedConditions": ["org_id IN (1,2,3)"],
+            "deniedConditions": ["org_id = 5"],
+            "optimizedWhereClause": "org_id IN (1,2,3) AND project_id IN (101,102)",
+            "parameterValues": {
+                "userId": 123,
+                "resourceCode": "customer_data"
+            }
+        },
+        "fieldAccessLevel": {
+            "effectiveLevel": 3,
+            "fieldGroups": ["basic_info", "extended_info", "contact_info"],
+            "fieldSpecificLevels": {
+                "basic_info": 1,
+                "contact_info": 3
+            }
+        }
+    },
+    "warnings": [],
+    "denialReasons": ["以下字段被明确拒绝访问: id_card"],
+    "ruleEvaluationDetails": {
+        "appliedRules": [
+            {
+                "ruleId": "RULE-1001",
+                "ruleName": "岗位模板规则",
+                "ruleType": "POST_TEMPLATE",
+                "priority": 500,
+                "effect": "允许访问READ操作"
+            }
+        ],
+        "conflicts": [],
+        "finalDecision": "PARTIAL_ALLOW"
+    }
+}
+
+POST /api/v1/rule-simulation/save
+# 保存模拟结果到实际权限
+
+POST /api/v1/rule-simulation/preview/comparison
+# 对比调整前后的规则变化
+
+GET /api/v1/rule-simulation/scenarios
+# 获取可用的业务场景列表
+
+GET /api/v1/rule-simulation/adjustment-templates
+# 获取调整模板配置
+```
+
+## 6. 核心算法设计
 
 ### 5.1 权限计算算法
 
