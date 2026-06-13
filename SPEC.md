@@ -471,6 +471,188 @@ Response:
 }
 ```
 
+### 4.5.2 增强版访问校验接口（V2）
+
+#### 4.5.2.1 支持的复杂查询条件
+
+**时间范围条件**
+```json
+{
+    "timeConditions": {
+        "field": "create_time",
+        "startTime": "2024-01-01 00:00:00",
+        "endTime": "2024-12-31 23:59:59",
+        "timeZone": "Asia/Shanghai"
+    }
+}
+```
+
+**客户等级条件**
+```json
+{
+    "customerConditions": {
+        "field": "customer_level",
+        "levels": [1, 2, 3],
+        "operator": "IN"
+    }
+}
+```
+
+**项目条件**
+```json
+{
+    "projectConditions": {
+        "field": "project_id",
+        "projectIds": [101, 102, 103],
+        "includeSubProject": true
+    }
+}
+```
+
+**组合条件（AND/OR）**
+```json
+{
+    "complexConditions": {
+        "operator": "AND",
+        "rules": [
+            {"field": "org_id", "operator": "IN", "value": [1, 2, 3]},
+            {"field": "customer_level", "operator": ">=", "value": 3},
+            {
+                "operator": "OR",
+                "rules": [
+                    {"field": "project_id", "operator": "IN", "value": [101, 102]},
+                    {"field": "is_test", "operator": "=", "value": false}
+                ]
+            }
+        ]
+    }
+}
+```
+
+#### 4.5.2.2 增强版权限校验请求
+```json
+{
+    "userId": 123,
+    "resourceCode": "sales_data",
+    "operationType": "READ",
+    "version": "v2",
+    "queryConditions": {
+        "orgId": 456,
+        "department": "销售部"
+    },
+    "complexConditions": {
+        "timeRange": {
+            "field": "order_time",
+            "startTime": "2024-01-01",
+            "endTime": "2024-12-31"
+        },
+        "customerLevel": {
+            "field": "customer_level",
+            "levels": [1, 2, 3, 4],
+            "operator": "IN"
+        },
+        "projectScope": {
+            "field": "project_id",
+            "projectIds": [101, 102],
+            "includeSubProject": true
+        }
+    },
+    "requestedFields": ["order_no", "customer_name", "amount", "profit", "commission"],
+    "returnSqlFilter": true,
+    "returnAppliedRules": true
+}
+```
+
+#### 4.5.2.3 增强版权限校验响应
+```json
+{
+    "code": 0,
+    "message": "success",
+    "data": {
+        "accessDecision": "PARTIAL",
+        "allowed": true,
+        
+        "appliedRules": [
+            {
+                "ruleId": 1001,
+                "ruleType": "HEADQUARTER_VIEW_SUB",
+                "ruleName": "总部查看下级组织",
+                "priority": 10,
+                "matched": true,
+                "matchReason": "用户属于集团总部，可查看3级以内下级组织"
+            },
+            {
+                "ruleId": 1002,
+                "ruleType": "REGION_ISOLATED",
+                "ruleName": "区域数据隔离",
+                "priority": 20,
+                "matched": false,
+                "matchReason": "不涉及区域隔离规则"
+            }
+        ],
+        
+        "effectiveRule": {
+            "ruleId": 1001,
+            "ruleType": "HEADQUARTER_VIEW_SUB",
+            "ruleName": "总部查看下级组织",
+            "effectiveReason": "优先级最高且命中"
+        },
+        
+        "accessibleScope": {
+            "orgIds": [456, 457, 458, 459, 460],
+            "orgType": "DEPT",
+            "projectIds": [101, 102, 103],
+            "timeRange": {
+                "startTime": "2024-01-01 00:00:00",
+                "endTime": "2024-12-31 23:59:59"
+            },
+            "customerLevels": [1, 2, 3]
+        },
+        
+        "sqlFilters": {
+            "whereClause": "org_id IN (456, 457, 458, 459, 460) AND customer_level IN (1, 2, 3) AND project_id IN (101, 102, 103)",
+            "orderByClause": "order_time DESC",
+            "limitClause": "LIMIT 1000"
+        },
+        
+        "fieldPermissions": [
+            {"field": "order_no", "allowed": true, "masked": false},
+            {"field": "customer_name", "allowed": true, "masked": false},
+            {"field": "amount", "allowed": true, "masked": false},
+            {"field": "profit", "allowed": false, "masked": true, "maskedValue": "***", "reason": "需要等级4权限"},
+            {"field": "commission", "allowed": false, "masked": false, "reason": "需要等级5权限"}
+        ],
+        
+        "deniedReason": "profit字段需要等级4权限，commission字段需要等级5权限",
+        "applyPermission": {
+            "canApply": true,
+            "applyUrl": "/permission/apply",
+            "permissionOptions": [
+                {
+                    "permissionType": "FIELD_LEVEL",
+                    "targetFields": ["profit"],
+                    "requiredLevel": 4,
+                    "approvalRequired": true,
+                    "validityPeriod": "30天"
+                },
+                {
+                    "permissionType": "FIELD_LEVEL",
+                    "targetFields": ["commission"],
+                    "requiredLevel": 5,
+                    "approvalRequired": true,
+                    "validityPeriod": "需特批"
+                }
+            ]
+        },
+        "suggestions": [
+            "您的当前权限等级为3，可申请临时授权提升至等级4",
+            "或联系管理员申请commission字段的特殊权限"
+        ],
+        "executionTime": 45
+    }
+}
+```
+
 **批量权限校验**
 ```
 POST /api/v1/access/check-batch
@@ -561,6 +743,488 @@ Query Params: startDate, endDate, format
 - 统计用户下载量
 - 单日超过阈值（默认100条）触发预警
 - 检测非常用时间访问
+
+## 5. 增强功能规格
+
+### 5.1 权限规则优先级与冲突处理
+
+#### 5.1.1 优先级定义
+```yaml
+权限规则优先级（数字越小优先级越高）：
+1. 特权规则（PRIVILEGED）：100   # 最高优先级，用于紧急授权
+2. 禁止规则（DENY）：200        # 禁止访问，绝对优先
+3. 项目临时规则（PROJECT_TEMP）：300
+4. 手动授权规则（MANUAL）：400
+5. 岗位模板规则（POST_TEMPLATE）：500
+6. 组织范围规则（ORG_SCOPE）：600  # 总部查看下级、区域隔离等
+7. 自动继承规则（AUTO）：700      # 默认权限
+```
+
+#### 5.1.2 冲突处理策略
+```
+冲突场景：总部查看下级 + 区域互不可见同时命中
+
+处理策略：
+1. 评估每条规则的优先级
+2. 禁止规则（DENY）绝对优先，直接拒绝
+3. 特权规则（PRIVILEGED）次之，授予全部权限
+4. 同优先级规则取交集：
+   - HEADQUARTER_VIEW_SUB + REGION_ISOLATED
+   - 结果 = (总部可见组织) ∩ (区域内组织) - (隔离组织)
+5. 返回生效规则说明，帮助管理员理解决策依据
+```
+
+#### 5.1.3 冲突检测API
+```
+GET /api/v1/org-scope/conflict-check
+Request: 
+{
+    "sourceOrgId": 1,
+    "targetOrgId": 5,
+    "grantTypes": ["HEADQUARTER_VIEW_SUB", "REGION_ISOLATED"]
+}
+
+Response:
+{
+    "hasConflict": true,
+    "conflicts": [
+        {
+            "rule1": {"id": 1001, "type": "HEADQUARTER_VIEW_SUB", "priority": 600},
+            "rule2": {"id": 1002, "type": "REGION_ISOLATED", "priority": 600},
+            "conflictType": "SCOPE_OVERLAP",
+            "resolution": "取交集"
+        }
+    ],
+    "effectiveRules": [
+        {"id": 1001, "type": "HEADQUARTER_VIEW_SUB", "effective": true}
+    ]
+}
+```
+
+#### 5.1.4 规则可视化
+```
+GET /api/v1/org-scope/visualize/{orgId}
+
+Response:
+{
+    "orgId": 1,
+    "orgName": "集团总部",
+    "rules": [
+        {
+            "id": 1001,
+            "ruleType": "HEADQUARTER_VIEW_SUB",
+            "ruleName": "总部查看下级",
+            "priority": 600,
+            "status": "ACTIVE",
+            "effectiveOrgIds": [2, 3, 4, 5, 6, 7, 8],
+            "conflicts": [
+                {"conflictRuleId": 1002, "conflictType": "REGION_ISOLATED", "resolved": true}
+            ]
+        }
+    ],
+    "summary": {
+        "totalRules": 3,
+        "activeRules": 2,
+        "conflicts": 1,
+        "conflictsResolved": 1
+    }
+}
+```
+
+### 5.2 增强版审计盘点
+
+#### 5.2.1 权限清单导出
+```
+GET /api/v1/audit/permission/export
+Query Params:
+- type: USER | RESOURCE | ORG
+- format: EXCEL | CSV | JSON
+- riskFilter: EXPIRING | UNUSED | OVER_GRANTED
+- startDate: 2024-01-01
+- endDate: 2024-12-31
+
+导出Excel包含以下Sheet:
+1. 权限总览 - 用户/资源/组织维度的权限清单
+2. 风险标注 - 快到期、长期未使用、权限过大
+3. 变更记录 - 权限变更历史
+4. 统计汇总 - 各项统计数据
+```
+
+#### 5.2.2 风险权限标注
+
+**快到期权限（EXPIRING）**
+```json
+{
+    "riskType": "EXPIRING",
+    "daysRemaining": 7,
+    "riskLevel": "MEDIUM",
+    "suggestions": ["续期授权", "评估是否需要"],
+    "autoAction": "发送提醒"
+}
+```
+
+**长期未使用权限（UNUSED）**
+```json
+{
+    "riskType": "UNUSED",
+    "lastUsedTime": "2024-01-01 00:00:00",
+    "unusedDays": 90,
+    "riskLevel": "HIGH",
+    "suggestions": ["回收权限", "确认是否需要"],
+    "autoAction": "标记待复核"
+}
+```
+
+**权限过大（OVER_GRANTED）**
+```json
+{
+    "riskType": "OVER_GRANTED",
+    "riskLevel": "CRITICAL",
+    "details": {
+        "currentLevel": 5,
+        "typicalLevel": 2,
+        "fieldCount": 50,
+        "orgScope": "ALL"
+    },
+    "suggestions": ["降低权限等级", "限制组织范围"],
+    "autoAction": "通知管理员"
+}
+```
+
+#### 5.2.3 定期复核任务
+```
+POST /api/v1/audit/review-task
+Request:
+{
+    "taskName": "2024年Q1权限复核",
+    "scope": {
+        "orgIds": [1, 2, 3],
+        "userIds": null,
+        "resourceTypes": ["TABLE", "API"]
+    },
+    "riskFilters": ["EXPIRING", "UNUSED", "OVER_GRANTED"],
+    "reviewers": [101, 102, 103],
+    "dueDate": "2024-03-31",
+    "autoRemind": true,
+    "remindInterval": 3
+}
+
+Response:
+{
+    "taskId": "RT202403001",
+    "status": "CREATED",
+    "statistics": {
+        "totalPermissions": 1500,
+        "expiringCount": 120,
+        "unusedCount": 85,
+        "overGrantedCount": 15
+    },
+    "assignedReviewers": [
+        {"userId": 101, "assignedCount": 500},
+        {"userId": 102, "assignedCount": 500},
+        {"userId": 103, "assignedCount": 500}
+    ]
+}
+```
+
+#### 5.2.4 复核操作API
+```
+GET /api/v1/audit/review-task/{taskId}/items
+# 获取待复核权限项
+
+POST /api/v1/audit/review-task/{taskId}/items/{itemId}/approve
+# 审批通过
+
+POST /api/v1/audit/review-task/{taskId}/items/{itemId}/revoke
+# 建议回收
+
+POST /api/v1/audit/review-task/{taskId}/items/{itemId}/modify
+# 建议修改
+
+GET /api/v1/audit/review-task/{taskId}/report
+# 生成复核报告
+```
+
+### 5.3 增强版异常预警
+
+#### 5.3.1 多维度异常检测
+```yaml
+异常检测维度：
+1. 下载次数异常
+   - 阈值：100次/日
+   - 级别：超过200次为高危
+
+2. 数据量异常
+   - 阈值：10000条/日
+   - 级别：超过50000条为高危
+
+3. 敏感字段访问异常
+   - 阈值：10个敏感字段/日
+   - 级别：超过30个为高危
+
+4. 访问频率异常
+   - 阈值：500次/小时
+   - 级别：超过1000次为高危
+
+5. 非工作时间访问
+   - 时间范围：22:00 - 06:00
+   - 级别：周末比工作日风险更高
+
+综合评分公式：
+riskScore = downloadScore * 0.3 + dataVolumeScore * 0.25 + 
+            sensitiveFieldScore * 0.25 + frequencyScore * 0.1 + 
+            offHoursScore * 0.1
+
+风险等级：
+- LOW: score < 30
+- MEDIUM: 30 <= score < 60
+- HIGH: 60 <= score < 80
+- CRITICAL: score >= 80
+```
+
+#### 5.3.2 预警记录关联
+```json
+{
+    "alertId": "AL20240315001",
+    "alertType": "COMPREHENSIVE",
+    "riskScore": 85,
+    "riskLevel": "CRITICAL",
+    "triggeredDimensions": [
+        {
+            "dimension": "DOWNLOAD_COUNT",
+            "threshold": 100,
+            "actual": 250,
+            "score": 25
+        },
+        {
+            "dimension": "DATA_VOLUME",
+            "threshold": 10000,
+            "actual": 80000,
+            "score": 20
+        },
+        {
+            "dimension": "SENSITIVE_FIELD_COUNT",
+            "threshold": 10,
+            "actual": 45,
+            "score": 20
+        }
+    ],
+    "relatedAccessLogs": [
+        {
+            "logId": 1001,
+            "accessTime": "2024-03-15 14:30:25",
+            "resourceCode": "customer_data",
+            "recordCount": 5000,
+            "sensitiveFields": ["phone", "id_card", "address"]
+        }
+    ],
+    "userInfo": {
+        "userId": 123,
+        "username": "zhangsan",
+        "orgName": "销售部",
+        "postName": "客户经理",
+        "avgAccessCount": 30
+    },
+    "suggestions": [
+        "建议立即联系用户确认业务需求",
+        "建议临时限制该用户的数据导出功能"
+    ],
+    "handleStatus": "PENDING",
+    "createdTime": "2024-03-15 15:00:00"
+}
+```
+
+#### 5.3.3 预警处理API
+```
+GET /api/v1/alert/page
+# 查询预警列表
+
+GET /api/v1/alert/{alertId}
+# 获取预警详情
+
+PUT /api/v1/alert/{alertId}/handle
+Request:
+{
+    "action": "CONFIRMED | FALSE_ALARM | RESTRICTED",
+    "handleResult": "已确认为正常业务行为",
+    "restrictActions": ["EXPORT", "SENSITIVE_FIELD_ACCESS"]
+}
+
+POST /api/v1/alert/{alertId}/block-user
+# 封禁用户
+
+GET /api/v1/alert/statistics
+# 预警统计
+```
+
+### 5.4 离职与转岗回收流程
+
+#### 5.4.1 离职流程
+```
+流程步骤：
+1. 用户状态变更为"待离职"
+   - 系统自动冻结账户
+   - 暂停所有数据访问
+
+2. 权限预评估
+   - 统计当前有效权限
+   - 识别共享账户风险
+   - 标记需交接权限
+
+3. 权限交接
+   - 指定交接人
+   - 迁移必要权限
+   - 记录交接清单
+
+4. 权限回收
+   - 自动回收全部授权
+   - 保留变更记录
+   - 生成交接报告
+
+5. 完成离职
+   - 正式禁用账户
+   - 发送通知给相关人
+```
+
+#### 5.4.2 离职API
+```
+POST /api/v1/user/{userId}/leave
+Request:
+{
+    "leaveDate": "2024-03-31",
+    "transferToUserId": 456,
+    "transferPermissions": true,
+    "notifyReviewers": true
+}
+
+Response:
+{
+    "taskId": "LT20240331001",
+    "status": "INITIATED",
+    "steps": [
+        {"step": "ACCOUNT_FREEZE", "status": "PENDING"},
+        {"step": "PERMISSION_ASSESS", "status": "PENDING"},
+        {"step": "PERMISSION_TRANSFER", "status": "PENDING"},
+        {"step": "PERMISSION_REVOKE", "status": "PENDING"},
+        {"step": "LEAVE_COMPLETE", "status": "PENDING"}
+    ],
+    "affectedPermissions": [
+        {"id": 1, "resourceCode": "customer_data", "status": "TO_TRANSFER"},
+        {"id": 2, "resourceCode": "sales_report", "status": "TO_REVOKE"}
+    ]
+}
+
+GET /api/v1/user/{userId}/leave/progress
+# 查询离职进度
+
+POST /api/v1/user/{userId}/leave/cancel
+# 取消离职（员工撤销）
+```
+
+#### 5.4.3 转岗流程
+```
+流程步骤：
+1. 新岗位分配
+   - 指定新组织
+   - 指定新岗位
+
+2. 旧权限评估
+   - 保留需延续权限
+   - 标记需回收权限
+
+3. 新权限计算
+   - 根据新岗位模板计算权限
+   - 合并保留权限
+   - 处理冲突规则
+
+4. 权限变更执行
+   - 回收旧权限
+   - 授予新权限
+   - 记录变更前后对比
+```
+
+#### 5.4.4 转岗API
+```
+POST /api/v1/user/{userId}/transfer
+Request:
+{
+    "targetOrgId": 5,
+    "targetPostId": 10,
+    "transferDate": "2024-04-01",
+    "keepPermissions": [
+        {"resourceId": 1, "reason": "项目延续需要"},
+        {"resourceId": 3, "reason": "客户关系维护"}
+    ],
+    "revokePermissions": [
+        {"resourceId": 2, "reason": "原部门专属权限"}
+    ]
+}
+
+Response:
+{
+    "taskId": "TR20240401001",
+    "status": "INITIATED",
+    "permissionChanges": {
+        "toKeep": [
+            {"resourceId": 1, "resourceName": "客户数据", "kept": true, "keepReason": "项目延续"}
+        ],
+        "toRevoke": [
+            {"resourceId": 2, "resourceName": "内部报表", "revokeReason": "部门专属"}
+        ],
+        "toGrant": [
+            {"resourceId": 10, "resourceName": "新部门报表", "fromTemplate": "新岗位模板"}
+        ]
+    },
+    "comparison": {
+        "beforeCount": 15,
+        "afterCount": 12,
+        "newFields": ["field1", "field2"],
+        "removedFields": ["field3"]
+    }
+}
+```
+
+#### 5.4.5 变更留痕
+```
+每条变更记录包含：
+{
+    "changeId": "CH20240331001",
+    "userId": 123,
+    "changeType": "TRANSFER",
+    "triggerType": "MANUAL | SYSTEM",
+    "beforeState": {
+        "orgId": 1,
+        "orgName": "销售一部",
+        "postId": 5,
+        "postName": "销售经理",
+        "permissions": [...]
+    },
+    "afterState": {
+        "orgId": 2,
+        "orgName": "销售二部",
+        "postId": 10,
+        "postName": "高级销售",
+        "permissions": [...]
+    },
+    "changeDetails": [
+        {
+            "permissionId": 1,
+            "action": "REVOKE",
+            "beforeValue": {...},
+            "afterValue": null
+        },
+        {
+            "permissionId": 10,
+            "action": "GRANT",
+            "beforeValue": null,
+            "afterValue": {...}
+        }
+    ],
+    "changeReason": "员工转岗",
+    "changeBy": 999,
+    "changeTime": "2024-04-01 09:00:00"
+}
+```
 
 ## 5. 核心算法设计
 

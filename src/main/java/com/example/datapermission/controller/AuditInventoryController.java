@@ -2,6 +2,7 @@ package com.example.datapermission.controller;
 
 import com.example.datapermission.dto.PermissionExportRequest;
 import com.example.datapermission.dto.ReviewTaskRequest;
+import com.example.datapermission.service.AuditExportService;
 import com.example.datapermission.service.AuditInventoryService;
 import com.example.datapermission.vo.Result;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +19,7 @@ import java.util.Map;
 public class AuditInventoryController {
 
     private final AuditInventoryService auditInventoryService;
+    private final AuditExportService auditExportService;
 
     @GetMapping("/permission/export")
     public Result<Map<String, Object>> exportPermissions(
@@ -42,7 +44,62 @@ public class AuditInventoryController {
         request.setIncludeChangeHistory(true);
         request.setIncludeStatistics(true);
 
-        Map<String, Object> result = auditInventoryService.exportPermissions(request);
+        Map<String, Object> result = auditExportService.exportPermissions(request);
+        return Result.success(result);
+    }
+
+    @GetMapping("/permission/export/expiring")
+    public Result<Map<String, Object>> exportExpiringPermissions(
+            @RequestParam(defaultValue = "7") Integer daysRemaining,
+            @RequestParam(required = false) List<Long> orgIds,
+            @RequestParam(required = false) List<String> resourceTypes) {
+
+        PermissionExportRequest request = new PermissionExportRequest();
+        request.setOrgIds(orgIds);
+        request.setResourceTypes(resourceTypes);
+
+        Map<String, Object> result = auditExportService.exportExpiringPermissions(daysRemaining, request);
+        return Result.success(result);
+    }
+
+    @GetMapping("/permission/export/unused")
+    public Result<Map<String, Object>> exportUnusedPermissions(
+            @RequestParam(defaultValue = "90") Integer unusedDays,
+            @RequestParam(required = false) List<Long> orgIds,
+            @RequestParam(required = false) List<String> resourceTypes) {
+
+        PermissionExportRequest request = new PermissionExportRequest();
+        request.setOrgIds(orgIds);
+        request.setResourceTypes(resourceTypes);
+
+        Map<String, Object> result = auditExportService.exportUnusedPermissions(unusedDays, request);
+        return Result.success(result);
+    }
+
+    @GetMapping("/permission/export/over-granted")
+    public Result<Map<String, Object>> exportOverGrantedPermissions(
+            @RequestParam(required = false) List<Long> orgIds,
+            @RequestParam(required = false) List<String> resourceTypes) {
+
+        PermissionExportRequest request = new PermissionExportRequest();
+        request.setOrgIds(orgIds);
+        request.setResourceTypes(resourceTypes);
+
+        Map<String, Object> result = auditExportService.exportOverGrantedPermissions(request);
+        return Result.success(result);
+    }
+
+    @GetMapping("/permission/export/all")
+    public Result<Map<String, Object>> exportAllRiskPermissions(
+            @RequestParam(required = false) List<Long> orgIds,
+            @RequestParam(required = false) List<String> resourceTypes) {
+
+        PermissionExportRequest request = new PermissionExportRequest();
+        request.setOrgIds(orgIds);
+        request.setResourceTypes(resourceTypes);
+        request.setRiskFilters(List.of("EXPIRING", "UNUSED", "OVER_GRANTED"));
+
+        Map<String, Object> result = auditExportService.exportPermissions(request);
         return Result.success(result);
     }
 

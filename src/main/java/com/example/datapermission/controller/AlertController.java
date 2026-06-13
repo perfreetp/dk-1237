@@ -1,10 +1,10 @@
 package com.example.datapermission.controller;
 
-import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.example.datapermission.dto.AlertDetailResponse;
 import com.example.datapermission.dto.AlertHandleRequest;
 import com.example.datapermission.entity.SysAnomalyAlert;
-import com.example.datapermission.enums.AlertAction;
 import com.example.datapermission.mapper.SysAnomalyAlertMapper;
+import com.example.datapermission.service.AlertDetailService;
 import com.example.datapermission.service.AlertService;
 import com.example.datapermission.vo.PageResult;
 import com.example.datapermission.vo.Result;
@@ -21,6 +21,7 @@ import java.util.Map;
 public class AlertController {
 
     private final AlertService alertService;
+    private final AlertDetailService alertDetailService;
     private final SysAnomalyAlertMapper alertMapper;
 
     @GetMapping("/page")
@@ -33,7 +34,8 @@ public class AlertController {
             @RequestParam(defaultValue = "1") Integer pageNum,
             @RequestParam(defaultValue = "10") Integer pageSize) {
 
-        Page<SysAnomalyAlert> page = new Page<>(pageNum, pageSize);
+        Page<com.baomidou.mybatisplus.extension.plugins.pagination.Page<SysAnomalyAlert>> page =
+                new com.baomidou.mybatisplus.extension.plugins.pagination.Page<>(pageNum, pageSize);
         com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<SysAnomalyAlert> wrapper =
                 new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<>();
 
@@ -54,7 +56,8 @@ public class AlertController {
         }
 
         wrapper.orderByDesc(SysAnomalyAlert::getCreatedTime);
-        Page<SysAnomalyAlert> result = alertMapper.selectPage(page, wrapper);
+        com.baomidou.mybatisplus.extension.plugins.pagination.Page<SysAnomalyAlert> result =
+                alertMapper.selectPage(page, wrapper);
 
         PageResult<SysAnomalyAlert> pageResult = new PageResult<>(
                 result.getTotal(), result.getCurrent(), result.getSize(), result.getRecords());
@@ -62,8 +65,15 @@ public class AlertController {
     }
 
     @GetMapping("/{alertId}")
-    public Result<SysAnomalyAlert> getById(@PathVariable Long alertId) {
-        return Result.success(alertMapper.selectById(alertId));
+    public Result<AlertDetailResponse> getAlertDetail(@PathVariable Long alertId) {
+        AlertDetailResponse detail = alertDetailService.getAlertDetail(alertId);
+        return Result.success(detail);
+    }
+
+    @GetMapping("/{alertId}/access-logs")
+    public Result<AlertDetailResponse.AccessLogDetail> getRelatedAccessLogs(@PathVariable Long alertId) {
+        AlertDetailResponse detail = alertDetailService.getAlertDetail(alertId);
+        return Result.success(detail.getRelatedAccessLogs());
     }
 
     @PutMapping("/{alertId}/handle")

@@ -36,6 +36,23 @@ public class EnhancedAccessCheckService {
     private final SysAnomalyAlertMapper anomalyAlertMapper;
     private final DesensitizationUtil desensitizationUtil;
 
+    private static final Map<Integer, String> SENSITIVITY_LEVEL_NAMES = new HashMap<>();
+    private static final Map<Integer, String> SENSITIVITY_LEVEL_DESCRIPTIONS = new HashMap<>();
+
+    static {
+        SENSITIVITY_LEVEL_NAMES.put(1, "1级-公开");
+        SENSITIVITY_LEVEL_NAMES.put(2, "2级-内部");
+        SENSITIVITY_LEVEL_NAMES.put(3, "3级-敏感");
+        SENSITIVITY_LEVEL_NAMES.put(4, "4级-机密");
+        SENSITIVITY_LEVEL_NAMES.put(5, "5级-绝密");
+
+        SENSITIVITY_LEVEL_DESCRIPTIONS.put(1, "可对外公开的数据");
+        SENSITIVITY_LEVEL_DESCRIPTIONS.put(2, "仅限内部员工访问");
+        SENSITIVITY_LEVEL_DESCRIPTIONS.put(3, "需要特定权限");
+        SENSITIVITY_LEVEL_DESCRIPTIONS.put(4, "需要部门负责人审批");
+        SENSITIVITY_LEVEL_DESCRIPTIONS.put(5, "需要高管特批");
+    }
+
     public EnhancedAccessCheckResponse checkAccess(EnhancedAccessCheckRequest request) {
         long startTime = System.currentTimeMillis();
         EnhancedAccessCheckResponse response = new EnhancedAccessCheckResponse();
@@ -48,7 +65,9 @@ public class EnhancedAccessCheckService {
             List<SysOrgScope> orgScopes = orgScopeService.getActiveBySourceOrgId(user.getOrgId());
 
             List<AppliedRule> appliedRules = buildAppliedRules(user, resource, permissions, orgScopes);
-            response.setAppliedRules(appliedRules);
+            if (Boolean.TRUE.equals(request.getReturnAppliedRules())) {
+                response.setAppliedRules(appliedRules);
+            }
 
             AppliedRule effectiveRule = determineEffectiveRule(appliedRules);
             response.setEffectiveRule(effectiveRule);
@@ -59,6 +78,7 @@ public class EnhancedAccessCheckService {
                 response.setAllowed(false);
                 response.setDeniedReason("您没有" + request.getOperationType() + "该资源的权限");
                 response.setSuggestions(List.of("请联系管理员申请权限", "/permission/apply?resourceCode=" + request.getResourceCode()));
+                response.setExecutionTime(System.currentTimeMillis() - startTime);
                 return response;
             }
 
@@ -68,10 +88,12 @@ public class EnhancedAccessCheckService {
             List<FieldPermission> fieldPermissions = checkFieldPermissions(request, resource, permissions);
             response.setFieldPermissions(fieldPermissions);
 
-            SqlFilters sqlFilters = buildSqlFilters(request, accessScope);
-            response.setSqlFilters(sqlFilters);
+            if (Boolean.TRUE.equals(request.getReturnSqlFilter())) {
+                SqlFilters sqlFilters = buildSqlFilters(request, accessScope);
+                response.setSqlFilters(sqlFilters);
+            }
 
-            ApplyPermission applyPermission = buildApplyPermission(fieldPermissions);
+            ApplyPermission applyPermission = buildApplyPermission(fieldPermissions, resource);
             response.setApplyPermission(applyPermission);
 
             List<String> hiddenFields = fieldPermissions.stream()
@@ -134,6 +156,8 @@ public class EnhancedAccessCheckService {
             rule.setPriority(scope.getPriority() != null ? scope.getPriority() : getDefaultPriority(scope.getGrantType()));
             rule.setMatched(isRuleMatched(user, scope));
             rule.setMatchReason(generateMatchReason(user, scope));
+            rule.setEffective(false);
+            rule.setStatus("MATCHED");
             rules.add(rule);
         }
 
@@ -145,19 +169,28 @@ public class EnhancedAccessCheckService {
             rule.setPriority(getDefaultPriority(perm.getGrantType()));
             rule.setMatched(true);
             rule.setMatchReason("用户拥有该资源的直接授权");
+            rule.setEffective(false);
+            rule.setStatus("MATCHED");
             rules.add(rule);
         }
 
-        return rules.stream()
+        List<AppliedRule> sortedRules = rules.stream()
                 .sorted(Comparator.comparing(AppliedRule::getPriority))
                 .collect(Collectors.toList());
+
+        if (!sortedRules.isEmpty()) {
+            sortedRules.get(0).setEffective(true);
+            sortedRules.get(0).setEffectiveReason("优先级最高且命中");
+            for (int i = 1; i < sortedRules.size(); i++) {
+                sortedRules.get(i).setStatus("SUPERSEDED");
+                sortedRules.get(i).setEffectiveReason("被优先级更高的规则覆盖");
+            }
+        }
+
+        return sortedRules;
     }
 
     private AppliedRule determineEffectiveRule(List<AppliedRule> appliedRules) {
-        if (appliedRules.isEmpty()) {
-            return null;
-        }
-
         return appliedRules.stream()
                 .filter(AppliedRule::getMatched)
                 .findFirst()
@@ -248,15 +281,15 @@ public class EnhancedAccessCheckService {
         if (request.getComplexConditions() != null) {
             EnhancedAccessCheckRequest.ComplexConditions conditions = request.getComplexConditions();
 
-            if (conditions.getCustomerLevel() != null) {
+            if (conditions.getCustomerLevel() != null && conditions.getCustomerLevel().isValid()) {
                 scope.setCustomerLevels(conditions.getCustomerLevel().getLevels());
             }
 
-            if (conditions.getProjectScope() != null) {
+            if (conditions.getProjectScope() != null && conditions.getProjectScope().isValid()) {
                 scope.setProjectIds(conditions.getProjectScope().getProjectIds());
             }
 
-            if (conditions.getTimeRange() != null) {
+            if (conditions.getTimeRange() != null && conditions.getTimeRange().isValid()) {
                 AccessScope.TimeRangeDetail timeRange = new AccessScope.TimeRangeDetail();
                 timeRange.setStartTime(conditions.getTimeRange().getStartTime());
                 timeRange.setEndTime(conditions.getTimeRange().getEndTime());
@@ -291,6 +324,9 @@ public class EnhancedAccessCheckService {
 
             SysSensitiveField sensitiveField = fieldMap.get(field);
             if (sensitiveField != null) {
+                fp.setFieldLabel(sensitiveField.getFieldLabel());
+                fp.setResourceSensitivityLevel(sensitiveField.getSensitivityLevel());
+
                 if (sensitiveField.getSensitivityLevel() > userFieldLevel) {
                     fp.setAllowed(false);
                     fp.setRequiredLevel(sensitiveField.getSensitivityLevel());
@@ -343,35 +379,49 @@ public class EnhancedAccessCheckService {
     private SqlFilters buildSqlFilters(EnhancedAccessCheckRequest request, AccessScope scope) {
         SqlFilters filters = new SqlFilters();
         List<String> conditions = new ArrayList<>();
+        Map<String, Object> parameters = new HashMap<>();
+        List<String> appliedConditions = new ArrayList<>();
 
         if (scope.getOrgIds() != null && !scope.getOrgIds().isEmpty()) {
             if (scope.getOrgIds().size() == 1) {
-                conditions.add("org_id = " + scope.getOrgIds().get(0));
+                String condition = "org_id = :orgId";
+                conditions.add(condition);
+                parameters.put("orgId", scope.getOrgIds().get(0));
+                appliedConditions.add("组织范围: " + scope.getOrgIds().get(0));
             } else {
-                conditions.add("org_id IN (" + scope.getOrgIds().stream()
-                        .map(String::valueOf)
-                        .collect(Collectors.joining(", ")) + ")");
+                String condition = "org_id IN (:orgIds)";
+                conditions.add(condition);
+                parameters.put("orgIds", scope.getOrgIds());
+                appliedConditions.add("组织范围: " + scope.getOrgIds().size() + "个组织");
             }
         }
 
         if (scope.getCustomerLevels() != null && !scope.getCustomerLevels().isEmpty()) {
-            conditions.add("customer_level IN (" + scope.getCustomerLevels().stream()
-                    .map(String::valueOf)
-                    .collect(Collectors.joining(", ")) + ")");
+            String condition = "customer_level IN (:customerLevels)";
+            conditions.add(condition);
+            parameters.put("customerLevels", scope.getCustomerLevels());
+            appliedConditions.add("客户等级: " + scope.getCustomerLevels());
         }
 
         if (scope.getProjectIds() != null && !scope.getProjectIds().isEmpty()) {
-            conditions.add("project_id IN (" + scope.getProjectIds().stream()
-                    .map(String::valueOf)
-                    .collect(Collectors.joining(", ")) + ")");
+            String condition = "project_id IN (:projectIds)";
+            conditions.add(condition);
+            parameters.put("projectIds", scope.getProjectIds());
+            appliedConditions.add("项目范围: " + scope.getProjectIds().size() + "个项目");
         }
 
         if (scope.getTimeRange() != null) {
             if (scope.getTimeRange().getStartTime() != null) {
-                conditions.add("order_time >= '" + scope.getTimeRange().getStartTime() + "'");
+                String condition = "order_time >= :startTime";
+                conditions.add(condition);
+                parameters.put("startTime", scope.getTimeRange().getStartTime());
+                appliedConditions.add("时间范围起: " + scope.getTimeRange().getStartTime());
             }
             if (scope.getTimeRange().getEndTime() != null) {
-                conditions.add("order_time <= '" + scope.getTimeRange().getEndTime() + "'");
+                String condition = "order_time <= :endTime";
+                conditions.add(condition);
+                parameters.put("endTime", scope.getTimeRange().getEndTime());
+                appliedConditions.add("时间范围止: " + scope.getTimeRange().getEndTime());
             }
         }
 
@@ -381,11 +431,13 @@ public class EnhancedAccessCheckService {
 
         filters.setOrderByClause("order_time DESC");
         filters.setLimitClause("LIMIT 1000");
+        filters.setParameters(parameters);
+        filters.setAppliedConditions(appliedConditions);
 
         return filters;
     }
 
-    private ApplyPermission buildApplyPermission(List<FieldPermission> fieldPermissions) {
+    private ApplyPermission buildApplyPermission(List<FieldPermission> fieldPermissions, SysResource resource) {
         ApplyPermission apply = new ApplyPermission();
 
         List<FieldPermission> deniedFields = fieldPermissions.stream()
@@ -398,29 +450,59 @@ public class EnhancedAccessCheckService {
         }
 
         apply.setCanApply(true);
-        apply.setApplyUrl("/permission/apply");
+        apply.setApplyUrl("/permission/apply?resourceCode=" + resource.getResourceCode());
 
-        List<PermissionOption> options = new ArrayList<>();
-        Map<Integer, List<String>> levelFieldsMap = new HashMap<>();
-
+        Map<Integer, List<FieldPermission>> levelGroups = new LinkedHashMap<>();
         for (FieldPermission fp : deniedFields) {
-            if (fp.getRequiredLevel() != null) {
-                levelFieldsMap.computeIfAbsent(fp.getRequiredLevel(), k -> new ArrayList<>())
-                        .add(fp.getField());
+            int level = fp.getRequiredLevel() != null ? fp.getRequiredLevel() : fp.getResourceSensitivityLevel() != null ? fp.getResourceSensitivityLevel() : 1;
+            levelGroups.computeIfAbsent(level, k -> new ArrayList<>()).add(fp);
+        }
+
+        List<PermissionGroup> groups = new ArrayList<>();
+        List<PermissionOption> directOptions = new ArrayList<>();
+
+        for (Map.Entry<Integer, List<FieldPermission>> entry : levelGroups.entrySet()) {
+            int level = entry.getKey();
+            List<FieldPermission> fields = entry.getValue();
+
+            PermissionGroup group = new PermissionGroup();
+            group.setSensitivityLevel(level);
+            group.setLevelName(SENSITIVITY_LEVEL_NAMES.getOrDefault(level, level + "级"));
+            group.setLevelDescription(SENSITIVITY_LEVEL_DESCRIPTIONS.getOrDefault(level, "需要等级" + level + "权限"));
+
+            List<PermissionOption> options = new ArrayList<>();
+            for (FieldPermission fp : fields) {
+                PermissionOption option = new PermissionOption();
+                option.setPermissionType("FIELD_LEVEL");
+                option.setPermissionTypeName("字段级别授权");
+                option.setTargetFields(List.of(fp.getField()));
+                option.setTargetFieldLabels(List.of(fp.getFieldLabel() != null ? fp.getFieldLabel() : fp.getField()));
+                option.setRequiredLevel(level);
+                option.setApprovalRequired(level >= 4);
+                option.setApprovalLevel(level >= 4 ? "需要" + (level == 4 ? "部门负责人" : "高管") + "审批" : "无需审批");
+                option.setValidityPeriod(level >= 5 ? "需特批" : (level >= 4 ? "7天" : "30天"));
+                option.setApplyTemplate("/permission/apply/template?level=" + level);
+                options.add(option);
+
+                PermissionOption directOption = new PermissionOption();
+                directOption.setPermissionType("FIELD_LEVEL");
+                directOption.setPermissionTypeName("字段级别授权");
+                directOption.setTargetFields(List.of(fp.getField()));
+                directOption.setTargetFieldLabels(List.of(fp.getFieldLabel() != null ? fp.getFieldLabel() : fp.getField()));
+                directOption.setRequiredLevel(level);
+                directOption.setApprovalRequired(level >= 4);
+                directOption.setApprovalLevel(level >= 4 ? "需要" + (level == 4 ? "部门负责人" : "高管") + "审批" : "无需审批");
+                directOption.setValidityPeriod(level >= 5 ? "需特批" : (level >= 4 ? "7天" : "30天"));
+                directOptions.add(directOption);
             }
+
+            group.setOptions(options);
+            groups.add(group);
         }
 
-        for (Map.Entry<Integer, List<String>> entry : levelFieldsMap.entrySet()) {
-            PermissionOption option = new PermissionOption();
-            option.setPermissionType("FIELD_LEVEL");
-            option.setTargetFields(entry.getValue());
-            option.setRequiredLevel(entry.getKey());
-            option.setApprovalRequired(entry.getKey() >= 4);
-            option.setValidityPeriod(entry.getKey() >= 5 ? "需特批" : "30天");
-            options.add(option);
-        }
+        apply.setPermissionGroups(groups);
+        apply.setDirectOptions(directOptions);
 
-        apply.setPermissionOptions(options);
         return apply;
     }
 

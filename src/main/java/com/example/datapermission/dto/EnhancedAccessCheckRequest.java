@@ -40,6 +40,14 @@ public class EnhancedAccessCheckRequest {
         private String startTime;
         private String endTime;
         private String timeZone;
+
+        public boolean isValid() {
+            return (startTime != null && !startTime.isEmpty()) || (endTime != null && !endTime.isEmpty());
+        }
+
+        public boolean hasBoth() {
+            return (startTime != null && !startTime.isEmpty()) && (endTime != null && !endTime.isEmpty());
+        }
     }
 
     @Data
@@ -47,6 +55,10 @@ public class EnhancedAccessCheckRequest {
         private String field;
         private List<Integer> levels;
         private String operator = "IN";
+
+        public boolean isValid() {
+            return levels != null && !levels.isEmpty();
+        }
     }
 
     @Data
@@ -54,6 +66,10 @@ public class EnhancedAccessCheckRequest {
         private String field;
         private List<Long> projectIds;
         private Boolean includeSubProject = false;
+
+        public boolean isValid() {
+            return projectIds != null && !projectIds.isEmpty();
+        }
     }
 
     @Data
