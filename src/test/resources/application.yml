@@ -1,0 +1,32 @@
+spring:
+  datasource:
+    url: jdbc:h2:mem:testdb;MODE=MySQL;DB_CLOSE_DELAY=-1
+    driver-class-name: org.h2.Driver
+    username: sa
+    password:
+
+  h2:
+    console:
+      enabled: true
+
+mybatis-plus:
+  mapper-locations: classpath*:/mapper/**/*.xml
+  configuration:
+    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+
+data-permission:
+  jwt:
+    secret: test-secret-key-for-jwt-token-signing-must-be-long-enough
+    expiration: 86400000
+
+  desensitization:
+    enabled: true
+    default-mask-char: "*"
+
+  alert:
+    download-threshold: 100
+    check-interval: 3600
+
+  expiration:
+    notice-days: 7,3,1,0
+    notice-time: "09:00"
